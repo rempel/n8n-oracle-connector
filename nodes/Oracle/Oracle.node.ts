@@ -23,21 +23,21 @@ class OracleHelper {
       host: string;
       port: number;
       serviceName: string;
-			clientMode: string;
+      clientMode: string;
     };
 
-		if (credentials.clientMode !== 'thin') {
-			try {
-				oracledb.initOracleClient({
-					libDir: process.env.ORACLE_CLIENT_LIB_PATH,
-					configDir: process.env.ORACLE_CLIENT_CONFIG_DIR,
-				});
-			} catch (error) {
-				if (!(error as Error).message.includes('already initialized')) {
-					throw error;
-				}
-			}
-		}
+    if (credentials.clientMode !== 'thin') {
+      try {
+        oracledb.initOracleClient({
+          libDir: process.env.ORACLE_CLIENT_LIB_PATH,
+          configDir: process.env.ORACLE_CLIENT_CONFIG_DIR,
+        });
+      } catch (error) {
+        if (!(error as Error).message.includes('already initialized')) {
+          throw error;
+        }
+      }
+    }
 
     const poolConfig = {
       user: credentials.user,
@@ -76,6 +76,7 @@ class OracleHelper {
       const query = this.context.getNodeParameter('query', i) as string;
       const params = JSON.parse(this.context.getNodeParameter('parameters', i, '{}') as string);
       const format = this.context.getNodeParameter('format', i, 'none') as string;
+      const includeOtherInputFields = this.context.getNodeParameter('includeOtherInputFields', i, true) as boolean;
 
       this.validateQuery(query, 'query');
 
@@ -85,7 +86,19 @@ class OracleHelper {
         const result = await connection.execute(query, params, { outFormat: oracledb.OUT_FORMAT_OBJECT });
         const rows = result.rows || [];
         const formattedResults = this.formatResults(rows as any[], format);
-        returnData.push(...formattedResults);
+
+        if (includeOtherInputFields) {
+          for (let j = 0; j < formattedResults.length; j++) {
+            returnData.push({
+              json: {
+                ...items[i].json,
+                ...formattedResults[j].json,
+              },
+            });
+          }
+        } else {
+          returnData.push(...formattedResults);
+        }
       } catch (error) {
         throw new NodeOperationError(
           this.context.getNode(),
@@ -112,6 +125,7 @@ class OracleHelper {
       const query = this.context.getNodeParameter('query', i) as string;
       const params = JSON.parse(this.context.getNodeParameter('parameters', i, '{}') as string);
       const autoCommit = this.context.getNodeParameter('autoCommit', i, true) as boolean;
+      const includeOtherInputFields = this.context.getNodeParameter('includeOtherInputFields', i, true) as boolean;
 
       this.validateQuery(query, 'execute');
 
@@ -120,7 +134,17 @@ class OracleHelper {
         connection = await oracledb.getConnection();
         const result = await connection.execute(query, params, { autoCommit });
         const jsonData = { affectedRows: result.rowsAffected };
-        returnData.push(...this.context.helpers.returnJsonArray([jsonData]));
+
+        if (includeOtherInputFields) {
+          returnData.push({
+            json: {
+              ...items[i].json,
+              ...jsonData,
+            },
+          });
+        } else {
+          returnData.push(...this.context.helpers.returnJsonArray([jsonData]));
+        }
       } catch (error) {
         throw new NodeOperationError(
           this.context.getNode(),
@@ -199,7 +223,7 @@ class OracleHelper {
 export class Oracle implements INodeType {
   description: INodeTypeDescription = {
     displayName: 'Oracle Database',
-		documentationUrl: 'https://rempel.github.io/n8n-oracle-connector/#/',
+    documentationUrl: 'https://rempel.github.io/n8n-oracle-connector/#/',
     name: 'oracle',
     icon: 'file:oracle.svg',
     group: ['transform'],
@@ -208,10 +232,8 @@ export class Oracle implements INodeType {
     defaults: {
       name: 'Oracle Database',
     },
-    // @ts-ignore
-		inputs: ['main'],
-		// @ts-ignore
-		outputs: ['main'],
+    inputs: ['main'],
+    outputs: ['main'],
     credentials: [
       {
         name: 'oracleApi',
@@ -223,7 +245,7 @@ export class Oracle implements INodeType {
         displayName: 'Resource',
         name: 'resource',
         type: 'options',
-								noDataExpression: true,
+        noDataExpression: true,
         options: [
           {
             name: 'Database',
@@ -237,19 +259,19 @@ export class Oracle implements INodeType {
         displayName: 'Operation',
         name: 'operation',
         type: 'options',
-								noDataExpression: true,
+        noDataExpression: true,
         options: [
           {
             name: 'Execute Query',
             value: 'query',
             description: 'Execute SELECT query',
-												action: 'Execute SELECT query',
+            action: 'Execute SELECT query',
           },
           {
             name: 'Execute Statement',
             value: 'execute',
             description: 'Execute DML/DDL statements or procedures',
-												action: 'Execute DML/DDL statements or procedures',
+            action: 'Execute DML/DDL statements or procedures',
           },
         ],
         default: 'query',
@@ -291,6 +313,18 @@ export class Oracle implements INodeType {
         },
         default: true,
         description: 'Whether to automatically commit transactions',
+      },
+      {
+        displayName: 'Include Other Input Fields',
+        name: 'includeOtherInputFields',
+        type: 'boolean',
+        displayOptions: {
+          show: {
+            operation: ['query', 'execute'],
+          },
+        },
+        default: false,
+        description: 'Whether to pass to the output all the input fields',
       },
       {
         displayName: 'Result Format',
