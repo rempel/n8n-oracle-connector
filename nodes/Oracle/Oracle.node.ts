@@ -126,7 +126,7 @@ class OracleHelper {
 		for (let i = 0; i < items.length; i++) {
 			let query = this.context.getNodeParameter('query', i) as string;
 			query = this.replaceNullVariables(query, items[i].json);
-			const params = JSON.parse(this.context.getNodeParameter('parameters', i, '{}') as string);
+			const paramsConfig = JSON.parse(this.context.getNodeParameter('parameters', i, '{}') as string);
 			const autoCommit = this.context.getNodeParameter('autoCommit', i, true) as boolean;
 			const includeOtherInputFields = this.context.getNodeParameter('includeOtherInputFields', i, true) as boolean;
 
@@ -135,8 +135,43 @@ class OracleHelper {
 			let connection;
 			try {
 				connection = await oracledb.getConnection();
-				const result = await connection.execute(query, params, { autoCommit });
-				const jsonData = { affectedRows: result.rowsAffected };
+
+				let params = paramsConfig;
+				const options = { autoCommit };
+				let returningIntoKey: string | undefined;
+
+				if (paramsConfig.hasOwnProperty('__outBinds__')) {
+					returningIntoKey = Object.keys(paramsConfig.__outBinds__)[0];
+					const outBindConfig = paramsConfig.__outBinds__[returningIntoKey];
+
+					const bindType = (oracledb as any)[outBindConfig.type];
+					if (!bindType) {
+						throw new NodeOperationError(this.context.getNode(), `Invalid oracledb type: ${outBindConfig.type}`);
+					}
+
+					params = {
+						...params,
+						[returningIntoKey]: {
+							type: bindType,
+							dir: oracledb.BIND_OUT,
+						},
+					};
+
+					delete params.__outBinds__;
+				}
+
+				const result = await connection.execute(query, params, options);
+
+				const jsonData: IDataObject = {};
+
+				if (result.rowsAffected) {
+					jsonData.affectedRows = result.rowsAffected;
+				}
+
+				const resultOutBinds = result.outBinds as Record<string, any>;
+				if (returningIntoKey && resultOutBinds && resultOutBinds[returningIntoKey]) {
+					jsonData[returningIntoKey] = resultOutBinds[returningIntoKey];
+				}
 
 				if (includeOtherInputFields) {
 					returnData.push({
