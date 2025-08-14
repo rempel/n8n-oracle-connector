@@ -1,6 +1,6 @@
 {
   "name": "@rempel/n8n-nodes-oracle",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "Oracle Database connector for n8n",
   "keywords": [
     "n8n",

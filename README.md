@@ -54,6 +54,42 @@ pnpm install @rempel/n8n-nodes-oracle
   ```
 - **Auto Commit**: Enables automatic transaction commit.
 
+#### Returning Values from a PL/SQL Block
+
+To return a value from a DML command (for example, a newly generated ID from an `INSERT`), you can use a PL/SQL block with the `RETURNING INTO` clause. This requires configuring an output bind variable.
+
+**1. SQL Query**
+Wrap your DML statement in a `BEGIN...END` block. Use `:your_bind_name` as an output variable to capture the returned value.
+
+```sql
+DECLARE
+    v_id NUMBER;
+BEGIN
+    INSERT INTO employees (
+      ...
+    ) VALUES (
+      ...
+    ) RETURNING ID INTO v_id;
+    
+    :id_out := v_id;
+END;
+```
+
+**2. Parameters**
+Configure the `__outBinds__` key in the `Parameters` JSON field to define the output variable, specifying its name and data type.
+
+```json
+{
+  "__outBinds__": {
+    "id_out": {
+      "type": "NUMBER"
+    }
+  }
+}
+```
+
+This configuration ensures the `id_out` value is correctly returned in the node's output.
+
 ---
 
 ## ⚙️ Advanced Settings
@@ -121,4 +157,4 @@ pnpm install @rempel/n8n-nodes-oracle
 - **Repository**: [GitHub](https://github.com/rempel/n8n-oracle-connector)  
 - **Support**: Submit issues on GitHub to report problems.  
 
-Documentation updated for version 1.0.11. Tested with Oracle Database 19c and n8n 1.18+.
+Documentation updated for version 1.0.12. Tested with Oracle Database 19c and n8n 1.18+.
