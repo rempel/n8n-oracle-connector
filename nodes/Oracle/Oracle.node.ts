@@ -76,16 +76,21 @@ class OracleHelper {
 		for (let i = 0; i < items.length; i++) {
 			let query = this.context.getNodeParameter('query', i) as string;
 			query = this.replaceNullVariables(query, items[i].json);
-			const params = JSON.parse(this.context.getNodeParameter('parameters', i, '{}') as string);
+
+			const paramsString = this.context.getNodeParameter('parameters', i, '{}') as string;
+			const params = this.parseParameters(paramsString);
+
+			const { query: processedQuery, params: processedParams } = this.processQueryAndParams(query, params);
+
 			const format = this.context.getNodeParameter('format', i, 'none') as string;
 			const includeOtherInputFields = this.context.getNodeParameter('includeOtherInputFields', i, true) as boolean;
 
-			this.validateQuery(query, 'query');
+			this.validateQuery(processedQuery, 'query');
 
 			let connection;
 			try {
 				connection = await oracledb.getConnection();
-				const result = await connection.execute(query, params, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+				const result = await connection.execute(processedQuery, processedParams, { outFormat: oracledb.OUT_FORMAT_OBJECT });
 				const rows = result.rows || [];
 				const formattedResults = this.formatResults(rows as any[], format);
 
@@ -126,23 +131,28 @@ class OracleHelper {
 		for (let i = 0; i < items.length; i++) {
 			let query = this.context.getNodeParameter('query', i) as string;
 			query = this.replaceNullVariables(query, items[i].json);
-			const paramsConfig = JSON.parse(this.context.getNodeParameter('parameters', i, '{}') as string);
+
+			const paramsString = this.context.getNodeParameter('parameters', i, '{}') as string;
+			const paramsConfig = this.parseParameters(paramsString);
+
+			const { query: processedQuery, params: processedParams } = this.processQueryAndParams(query, paramsConfig);
+
 			const autoCommit = this.context.getNodeParameter('autoCommit', i, true) as boolean;
 			const includeOtherInputFields = this.context.getNodeParameter('includeOtherInputFields', i, true) as boolean;
 
-			this.validateQuery(query, 'execute');
+			this.validateQuery(processedQuery, 'execute');
 
 			let connection;
 			try {
 				connection = await oracledb.getConnection();
 
-				let params = paramsConfig;
+				let params = processedParams;
 				const options = { autoCommit };
 				let returningIntoKey: string | undefined;
 
-				if (paramsConfig.hasOwnProperty('__outBinds__')) {
-					returningIntoKey = Object.keys(paramsConfig.__outBinds__)[0];
-					const outBindConfig = paramsConfig.__outBinds__[returningIntoKey];
+				if (processedParams.hasOwnProperty('__outBinds__')) {
+					returningIntoKey = Object.keys(processedParams.__outBinds__)[0];
+					const outBindConfig = processedParams.__outBinds__[returningIntoKey];
 
 					const bindType = (oracledb as any)[outBindConfig.type];
 					if (!bindType) {
@@ -160,7 +170,7 @@ class OracleHelper {
 					delete params.__outBinds__;
 				}
 
-				const result = await connection.execute(query, params, options);
+				const result = await connection.execute(processedQuery, params, options);
 
 				const jsonData: IDataObject = {};
 
@@ -202,6 +212,22 @@ class OracleHelper {
 		return returnData;
 	}
 
+	private processQueryAndParams(query: string, params: any): { query: string; params: any } {
+		let processedQuery = query;
+		const processedParams: any = {};
+
+		for (const [key, value] of Object.entries(params)) {
+			if (value === null || value === undefined) {
+				const regex = new RegExp(`:${key}\\b`, 'g');
+				processedQuery = processedQuery.replace(regex, 'NULL');
+			} else {
+				processedParams[key] = value;
+			}
+		}
+
+		return { query: processedQuery, params: processedParams };
+	}
+
 	replaceNullVariables(query: string, itemJson: IDataObject): string {
 		return query.replace(/\{\{\s*\$json\.([a-zA-Z0-9_]+)(?:\s*\?\?\s*null)?\s*\}\}/g, (_, key) => {
 			const value = itemJson[key];
@@ -215,12 +241,39 @@ class OracleHelper {
 		});
 	}
 
+	private fixInvalidJson(jsonString: string): string {
+		return jsonString.replace(/:\s*}/g, ': null}')
+			.replace(/:\s*,/g, ': null,');
+	}
+
+	private parseParameters(paramsString: string): any {
+		try {
+			return JSON.parse(paramsString);
+		} catch (error) {
+			const fixedJson = this.fixInvalidJson(paramsString);
+
+			try {
+				return JSON.parse(fixedJson);
+			} catch (secondError) {
+				throw new NodeOperationError(
+					this.context.getNode(),
+					`Invalid JSON parameters: ${paramsString}. Error: ${(error as Error).message}`
+				);
+			}
+		}
+	}
+
 	validateQuery(query: string, operation: string): void {
 		const upperQuery = query.toUpperCase();
 
 		if (operation === 'query') {
 			const forbidden = ['INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP', 'ALTER'];
-			if (forbidden.some(keyword => upperQuery.includes(keyword))) {
+			const hasForbiddenKeyword = forbidden.some(keyword => {
+				const regex = new RegExp(`\\b${keyword}\\b`);
+				return regex.test(upperQuery);
+			});
+
+			if (hasForbiddenKeyword) {
 				throw new NodeOperationError(
 					this.context.getNode(),
 					'Invalid query type for SELECT operation. Use Execute Statement for non-SELECT queries.'
