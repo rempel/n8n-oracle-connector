@@ -157,4 +157,4 @@ This configuration ensures the `id_out` value is correctly returned in the node'
 - **Repository**: [GitHub](https://github.com/rempel/n8n-oracle-connector)  
 - **Support**: Submit issues on GitHub to report problems.  
 
-Documentation updated for version 1.0.12. Tested with Oracle Database 19c and n8n 1.18+.
+Documentation updated for version 1.0.13. Tested with Oracle Database 19c and n8n 1.18+.
