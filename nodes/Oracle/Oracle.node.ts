@@ -25,6 +25,10 @@ class OracleHelper {
 			port: number;
 			serviceName: string;
 			clientMode: string;
+			nlsLanguage?: string;
+			nlsTerritory?: string;
+			nlsSort?: string;
+			nlsComp?: string;
 		};
 
 		if (credentials.clientMode !== 'thin') {
@@ -51,8 +55,53 @@ class OracleHelper {
 
 		try {
 			await oracledb.createPool(poolConfig);
+			await this.configureNLS(credentials);
 		} catch (error) {
 			throw new NodeOperationError(this.context.getNode(), `Error creating Oracle pool: ${(error as Error).message}`);
+		}
+	}
+
+	private async configureNLS(credentials: any): Promise<void> {
+		const nlsSettings: string[] = [];
+
+		if (credentials.nlsLanguage && credentials.nlsLanguage !== 'AMERICAN') {
+			nlsSettings.push(`NLS_LANGUAGE = ${credentials.nlsLanguage}`);
+		}
+
+		if (credentials.nlsTerritory && credentials.nlsTerritory !== 'AMERICA') {
+			nlsSettings.push(`NLS_TERRITORY = ${credentials.nlsTerritory}`);
+		}
+
+		if (credentials.nlsSort && credentials.nlsSort !== 'BINARY') {
+			nlsSettings.push(`NLS_SORT = ${credentials.nlsSort}`);
+		}
+
+		if (credentials.nlsComp && credentials.nlsComp !== 'BINARY') {
+			nlsSettings.push(`NLS_COMP = ${credentials.nlsComp}`);
+		}
+
+		if (nlsSettings.length > 0) {
+			let connection;
+			try {
+				connection = await oracledb.getConnection();
+
+				for (const setting of nlsSettings) {
+					const query = `ALTER SESSION SET ${setting}`;
+					await connection.execute(query);
+				}
+
+				console.log(`NLS settings applied: ${nlsSettings.join(', ')}`);
+			} catch (error) {
+				console.warn(`Warning: Could not apply NLS settings: ${(error as Error).message}`);
+			} finally {
+				if (connection) {
+					try {
+						await connection.close();
+					} catch (error) {
+						console.error('Error closing NLS configuration connection:', error);
+					}
+				}
+			}
 		}
 	}
 
@@ -90,6 +139,8 @@ class OracleHelper {
 			let connection;
 			try {
 				connection = await oracledb.getConnection();
+				await this.applyNLSToConnection(connection);
+
 				const result = await connection.execute(processedQuery, processedParams, { outFormat: oracledb.OUT_FORMAT_OBJECT });
 				const rows = result.rows || [];
 				const formattedResults = this.formatResults(rows as any[], format);
@@ -145,6 +196,7 @@ class OracleHelper {
 			let connection;
 			try {
 				connection = await oracledb.getConnection();
+				await this.applyNLSToConnection(connection);
 
 				let params = processedParams;
 				const options = { autoCommit };
@@ -210,6 +262,41 @@ class OracleHelper {
 		}
 
 		return returnData;
+	}
+
+	private async applyNLSToConnection(connection: any): Promise<void> {
+		try {
+			const credentials = await this.context.getCredentials('oracleApi') as {
+				nlsLanguage?: string;
+				nlsTerritory?: string;
+				nlsSort?: string;
+				nlsComp?: string;
+			};
+
+			const nlsStatements: string[] = [];
+
+			if (credentials.nlsLanguage && credentials.nlsLanguage !== 'AMERICAN') {
+				nlsStatements.push(`ALTER SESSION SET NLS_LANGUAGE = '${credentials.nlsLanguage}'`);
+			}
+
+			if (credentials.nlsTerritory && credentials.nlsTerritory !== 'AMERICA') {
+				nlsStatements.push(`ALTER SESSION SET NLS_TERRITORY = '${credentials.nlsTerritory}'`);
+			}
+
+			if (credentials.nlsSort && credentials.nlsSort !== 'BINARY') {
+				nlsStatements.push(`ALTER SESSION SET NLS_SORT = '${credentials.nlsSort}'`);
+			}
+
+			if (credentials.nlsComp && credentials.nlsComp !== 'BINARY') {
+				nlsStatements.push(`ALTER SESSION SET NLS_COMP = '${credentials.nlsComp}'`);
+			}
+
+			for (const statement of nlsStatements) {
+				await connection.execute(statement);
+			}
+		} catch (error) {
+			console.warn(`Warning: Could not apply NLS settings to connection: ${(error as Error).message}`);
+		}
 	}
 
 	private processQueryAndParams(query: string, params: any): { query: string; params: any } {
