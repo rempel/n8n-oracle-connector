@@ -10,9 +10,14 @@ import * as oracledb from 'oracledb';
 
 class OracleHelper {
 	private readonly context: IExecuteFunctions;
+	private static pools = new Map<string, any>();
 
 	constructor(context: IExecuteFunctions) {
 		this.context = context;
+	}
+
+	private getPoolKey(credentials: any): string {
+		return `${credentials.user}@${this.getConnectString(credentials)}`;
 	}
 
 	async initializeOraclePool() {
@@ -31,6 +36,18 @@ class OracleHelper {
 			nlsComp?: string;
 		};
 
+		const poolKey = this.getPoolKey(credentials);
+
+		if (OracleHelper.pools.has(poolKey)) {
+			const existingPool = OracleHelper.pools.get(poolKey);
+			try {
+				await existingPool.getConnection().then((conn: any) => conn.close());
+				return;
+			} catch (error) {
+				OracleHelper.pools.delete(poolKey);
+			}
+		}
+
 		if (credentials.clientMode !== 'thin') {
 			try {
 				oracledb.initOracleClient({
@@ -48,60 +65,44 @@ class OracleHelper {
 			user: credentials.user,
 			password: credentials.password,
 			connectString: this.getConnectString(credentials),
-			poolMin: this.context.getNodeParameter('poolOptions.poolMin', 0, 1) as number,
-			poolMax: this.context.getNodeParameter('poolOptions.poolMax', 0, 10) as number,
-			queueTimeout: this.context.getNodeParameter('poolOptions.queueTimeout', 0, 30000) as number,
+			poolMin: this.context.getNodeParameter('poolOptions.poolMin', 0, 2) as number,
+			poolMax: this.context.getNodeParameter('poolOptions.poolMax', 0, 20) as number,
+			poolIncrement: 1,
+			poolTimeout: 300,
+			stmtCacheSize: 30,
+			queueTimeout: this.context.getNodeParameter('poolOptions.queueTimeout', 0, 60000) as number,
 		};
 
 		try {
-			await oracledb.createPool(poolConfig);
-			await this.configureNLS(credentials);
+			const pool = await oracledb.createPool(poolConfig);
+			OracleHelper.pools.set(poolKey, pool);
+			console.log(`Created Oracle connection pool for ${poolKey}`);
 		} catch (error) {
 			throw new NodeOperationError(this.context.getNode(), `Error creating Oracle pool: ${(error as Error).message}`);
 		}
 	}
 
-	private async configureNLS(credentials: any): Promise<void> {
-		const nlsSettings: string[] = [];
+	private async getPoolConnection(): Promise<any> {
+		const credentials = await this.context.getCredentials('oracleApi');
+		const poolKey = this.getPoolKey(credentials);
+		const pool = OracleHelper.pools.get(poolKey);
 
-		if (credentials.nlsLanguage && credentials.nlsLanguage !== 'AMERICAN') {
-			nlsSettings.push(`NLS_LANGUAGE = ${credentials.nlsLanguage}`);
+		if (!pool) {
+			throw new NodeOperationError(this.context.getNode(), 'Connection pool not initialized');
 		}
 
-		if (credentials.nlsTerritory && credentials.nlsTerritory !== 'AMERICA') {
-			nlsSettings.push(`NLS_TERRITORY = ${credentials.nlsTerritory}`);
-		}
-
-		if (credentials.nlsSort && credentials.nlsSort !== 'BINARY') {
-			nlsSettings.push(`NLS_SORT = ${credentials.nlsSort}`);
-		}
-
-		if (credentials.nlsComp && credentials.nlsComp !== 'BINARY') {
-			nlsSettings.push(`NLS_COMP = ${credentials.nlsComp}`);
-		}
-
-		if (nlsSettings.length > 0) {
-			let connection;
-			try {
-				connection = await oracledb.getConnection();
-
-				for (const setting of nlsSettings) {
-					const query = `ALTER SESSION SET ${setting}`;
-					await connection.execute(query);
-				}
-
-				console.log(`NLS settings applied: ${nlsSettings.join(', ')}`);
-			} catch (error) {
-				console.warn(`Warning: Could not apply NLS settings: ${(error as Error).message}`);
-			} finally {
-				if (connection) {
-					try {
-						await connection.close();
-					} catch (error) {
-						console.error('Error closing NLS configuration connection:', error);
-					}
-				}
+		try {
+			const connection = await pool.getConnection();
+			await this.applyNLSToConnection(connection);
+			return connection;
+		} catch (error) {
+			if ((error as Error).message.includes('NJS-040')) {
+				throw new NodeOperationError(
+					this.context.getNode(),
+					`Connection timeout: All connections are busy. Consider increasing poolMax or optimizing your queries. Current pool config: max=${pool.poolMax}, min=${pool.poolMin}`
+				);
 			}
+			throw error;
 		}
 	}
 
@@ -138,10 +139,14 @@ class OracleHelper {
 
 			let connection;
 			try {
-				connection = await oracledb.getConnection();
-				await this.applyNLSToConnection(connection);
+				connection = await this.getPoolConnection();
 
-				const result = await connection.execute(processedQuery, processedParams, { outFormat: oracledb.OUT_FORMAT_OBJECT });
+				const result = await connection.execute(processedQuery, processedParams, {
+					outFormat: oracledb.OUT_FORMAT_OBJECT,
+					maxRows: 10000,
+					fetchArraySize: 1000
+				});
+
 				const rows = result.rows || [];
 				const formattedResults = this.formatResults(rows as any[], format);
 
@@ -195,8 +200,7 @@ class OracleHelper {
 
 			let connection;
 			try {
-				connection = await oracledb.getConnection();
-				await this.applyNLSToConnection(connection);
+				connection = await this.getPoolConnection();
 
 				let params = processedParams;
 				const options = { autoCommit };
@@ -226,7 +230,7 @@ class OracleHelper {
 
 				const jsonData: IDataObject = {};
 
-				if (result.rowsAffected) {
+				if (result.rowsAffected !== undefined) {
 					jsonData.affectedRows = result.rowsAffected;
 				}
 
@@ -400,14 +404,19 @@ class OracleHelper {
 	}
 
 	async closeOraclePool(): Promise<void> {
-		try {
-			const pool = oracledb.getPool();
-			if (pool) {
+		console.log('Connection pool cleanup deferred to pool timeout mechanism');
+	}
+
+	static async closeAllPools(): Promise<void> {
+		for (const [key, pool] of OracleHelper.pools.entries()) {
+			try {
 				await pool.close();
+				console.log(`Closed pool for ${key}`);
+			} catch (error) {
+				console.error(`Error closing pool for ${key}:`, error);
 			}
-		} catch (error) {
-			console.error('Error closing connection pool:', error);
 		}
+		OracleHelper.pools.clear();
 	}
 }
 
@@ -545,19 +554,22 @@ export class Oracle implements INodeType {
 						displayName: 'Pool Min',
 						name: 'poolMin',
 						type: 'number',
-						default: 1,
+						default: 2,
+						description: 'Minimum number of connections in pool',
 					},
 					{
 						displayName: 'Pool Max',
 						name: 'poolMax',
 						type: 'number',
-						default: 10,
+						default: 20,
+						description: 'Maximum number of connections in pool',
 					},
 					{
 						displayName: 'Queue Timeout (Ms)',
 						name: 'queueTimeout',
 						type: 'number',
-						default: 30000,
+						default: 60000,
+						description: 'Time to wait for connection when pool is busy',
 					},
 				],
 			},
@@ -591,8 +603,6 @@ export class Oracle implements INodeType {
 			return [returnData];
 		} catch (error) {
 			throw new NodeOperationError(this.getNode(), error as Error);
-		} finally {
-			await helper.closeOraclePool();
 		}
 	}
 }
