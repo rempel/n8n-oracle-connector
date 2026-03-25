@@ -37,9 +37,9 @@
     "build": "tsc && gulp build:icons",
     "dev": "tsc --watch",
     "format": "prettier nodes credentials --write",
-    "lint": "eslint nodes credentials package.json",
-    "lintfix": "eslint nodes credentials package.json --fix",
-    "prepublishOnly": "pnpm build && pnpm lint -c .eslintrc.prepublish.js nodes credentials package.json"
+    "lint": "ESLINT_USE_FLAT_CONFIG=false eslint nodes credentials package.json",
+    "lintfix": "ESLINT_USE_FLAT_CONFIG=false eslint nodes credentials package.json --fix",
+    "prepublishOnly": "pnpm build && ESLINT_USE_FLAT_CONFIG=false eslint -c .eslintrc.prepublish.js nodes credentials package.json"
   },
   "files": [
     "dist"
@@ -57,7 +57,7 @@
     "@types/node": "^24.0.3",
     "@types/oracledb": "^6.6.1",
     "@typescript-eslint/parser": "^8.34.1",
-    "eslint": "^8.57.0",
+    "eslint": "^9.29.0",
     "eslint-plugin-n8n-nodes-base": "^1.16.3",
     "gulp": "^5.0.1",
     "prettier": "^3.5.3",
